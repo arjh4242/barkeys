@@ -1,12 +1,20 @@
 import Cocoa
 import IOBluetooth
+import IOKit.hid
 import UserNotifications
 
 // Battery level for a Bluetooth device is not part of any public, documented
-// macOS API. This uses the long-standing community technique of reading the
-// "batteryPercent" key via KVC on IOBluetoothDevice, which only Apple-made
-// accessories (AirPods, Magic Mouse/Keyboard/Trackpad) populate. Third-party
-// devices typically do not respond to the selector, so `battery` stays nil.
+// macOS API. Two community techniques are combined here:
+// 1. IOHIDManager: devices that implement the standard Bluetooth HID Battery
+//    Service (many "Made for Mac" mice/keyboards/trackpads, not just Apple's)
+//    expose a "BatteryPercent" property on their IOHIDDevice. This is the
+//    more broadly applicable source and is tried first.
+// 2. IOBluetoothDevice's private "batteryPercent" KVC key, which Apple's own
+//    accessories (AirPods, Magic Mouse/Keyboard/Trackpad) populate even when
+//    they don't surface it through IOHIDManager.
+// Devices using audio profiles (A2DP/HFP) such as headphones, earbuds and
+// speakers don't expose battery through either path, so `battery` stays nil
+// for those.
 struct BluetoothDeviceInfo {
     let address: String
     let name: String
@@ -31,14 +39,16 @@ final class BluetoothBatteryMonitor {
     func refresh() {
         var result: [BluetoothDeviceInfo] = []
         let batterySelector = NSSelectorFromString("batteryPercent")
+        let hidBatteries = hidBluetoothBatteryLevels()
 
         if let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
             for device in paired where device.isConnected() {
                 let address = device.addressString ?? UUID().uuidString
                 let name = device.name ?? L.text(da: "Ukendt enhed", en: "Unknown device")
 
-                var battery: Int? = nil
-                if device.responds(to: batterySelector),
+                var battery: Int? = hidBatteries[name]
+                if battery == nil,
+                   device.responds(to: batterySelector),
                    let value = device.value(forKey: "batteryPercent") as? Int,
                    value >= 0, value <= 100 {
                     battery = value
@@ -51,6 +61,30 @@ final class BluetoothBatteryMonitor {
 
         devices = result.sorted { $0.name < $1.name }
         onUpdate?()
+    }
+
+    private func hidBluetoothBatteryLevels() -> [String: Int] {
+        var result: [String: Int] = [:]
+
+        let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        IOHIDManagerSetDeviceMatching(manager, nil)
+        IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        defer { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
+
+        guard let deviceSet = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> else {
+            return result
+        }
+
+        for device in deviceSet {
+            guard let transport = IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String,
+                  transport.localizedCaseInsensitiveContains("bluetooth") else { continue }
+            guard let percent = IOHIDDeviceGetProperty(device, "BatteryPercent" as CFString) as? Int,
+                  percent >= 0, percent <= 100 else { continue }
+            guard let name = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String else { continue }
+            result[name] = percent
+        }
+
+        return result
     }
 
     private func checkAlarm(address: String, name: String, battery: Int?) {
