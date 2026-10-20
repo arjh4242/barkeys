@@ -16,12 +16,12 @@ private func postCommandKey(_ keyCode: CGKeyCode, flags: CGEventFlags = .maskCom
     up.post(tap: .cghidEventTap)
 }
 
-enum AppLanguage: String {
+private enum AppLanguage: String {
     case danish = "da"
     case english = "en"
 }
 
-enum L {
+private enum L {
     static var lang: AppLanguage {
         if let raw = UserDefaults.standard.string(forKey: "language"), let l = AppLanguage(rawValue: raw) {
             return l
@@ -81,8 +81,6 @@ private enum Shortcut: String, CaseIterable {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItems: [Shortcut: NSStatusItem] = [:]
-    private var bluetoothStatusItem: NSStatusItem?
-    private let bluetoothMonitor = BluetoothBatteryMonitor()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -91,16 +89,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for shortcut in Shortcut.allCases.reversed() {
             statusItems[shortcut] = makeShortcutItem(shortcut)
         }
-
-        bluetoothStatusItem = makeBluetoothStatusItem()
-        bluetoothStatusItem?.isVisible = isBluetoothBatteryVisible()
-
-        bluetoothMonitor.onUpdate = { [weak self] in
-            DispatchQueue.main.async {
-                self?.updateBluetoothTooltip()
-            }
-        }
-        bluetoothMonitor.start()
 
         applyVisibility()
     }
@@ -138,109 +126,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func makeBluetoothStatusItem() -> NSStatusItem {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = item.button {
-            let title = L.text(da: "Bluetooth-batteri", en: "Bluetooth battery")
-            button.image = NSImage(systemSymbolName: "wave.3.right.circle", accessibilityDescription: title)
-            button.image?.isTemplate = true
-            button.toolTip = title
-            button.target = self
-            button.action = #selector(bluetoothIconClicked(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        }
-        return item
-    }
-
-    @objc private func bluetoothIconClicked(_ sender: NSStatusBarButton) {
-        guard let event = NSApp.currentEvent else { return }
-        bluetoothMonitor.refresh()
-        NSMenu.popUpContextMenu(buildBluetoothMenu(), with: event, for: sender)
-    }
-
-    private func buildBluetoothMenu() -> NSMenu {
-        let menu = NSMenu()
-
-        if bluetoothMonitor.devices.isEmpty {
-            let empty = NSMenuItem(
-                title: L.text(da: "Ingen tilsluttede enheder", en: "No connected devices"),
-                action: nil,
-                keyEquivalent: ""
-            )
-            empty.isEnabled = false
-            menu.addItem(empty)
-        } else {
-            for device in bluetoothMonitor.devices {
-                let batteryText = device.battery.map { "\($0)%" } ?? L.text(da: "ukendt", en: "unknown")
-                let item = NSMenuItem(title: "\(device.name): \(batteryText)", action: nil, keyEquivalent: "")
-                item.isEnabled = false
-                menu.addItem(item)
-            }
-        }
-
-        menu.addItem(.separator())
-
-        let refresh = NSMenuItem(
-            title: L.text(da: "Opdater nu", en: "Refresh now"),
-            action: #selector(refreshBluetooth),
-            keyEquivalent: ""
-        )
-        refresh.target = self
-        menu.addItem(refresh)
-
-        menu.addItem(.separator())
-
-        let alarmToggle = NSMenuItem(
-            title: L.text(da: "Alarm ved lavt batteri", en: "Low battery alarm"),
-            action: #selector(toggleBluetoothAlarm(_:)),
-            keyEquivalent: ""
-        )
-        alarmToggle.target = self
-        alarmToggle.state = bluetoothMonitor.isAlarmEnabled() ? .on : .off
-        menu.addItem(alarmToggle)
-
-        let thresholdItem = NSMenuItem(
-            title: L.text(da: "Alarmgrænse", en: "Alarm threshold"),
-            action: nil,
-            keyEquivalent: ""
-        )
-        let thresholdMenu = NSMenu()
-        for value in [10, 15, 20, 25, 30, 40, 50] {
-            let option = NSMenuItem(title: "\(value)%", action: #selector(setBluetoothThreshold(_:)), keyEquivalent: "")
-            option.target = self
-            option.representedObject = value
-            option.state = bluetoothMonitor.alarmThreshold() == value ? .on : .off
-            thresholdMenu.addItem(option)
-        }
-        thresholdItem.submenu = thresholdMenu
-        menu.addItem(thresholdItem)
-
-        return menu
-    }
-
-    @objc private func refreshBluetooth() {
-        bluetoothMonitor.refresh()
-    }
-
-    @objc private func toggleBluetoothAlarm(_ sender: NSMenuItem) {
-        bluetoothMonitor.setAlarmEnabled(sender.state != .on)
-    }
-
-    @objc private func setBluetoothThreshold(_ sender: NSMenuItem) {
-        guard let value = sender.representedObject as? Int else { return }
-        bluetoothMonitor.setAlarmThreshold(value)
-    }
-
-    private func updateBluetoothTooltip() {
-        guard let button = bluetoothStatusItem?.button else { return }
-        let title = L.text(da: "Bluetooth-batteri", en: "Bluetooth battery")
-        if let lowest = bluetoothMonitor.devices.compactMap({ $0.battery }).min() {
-            button.toolTip = "\(title) – \(L.text(da: "lavest", en: "lowest")): \(lowest)%"
-        } else {
-            button.toolTip = title
-        }
-    }
-
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
 
@@ -251,17 +136,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.representedObject = shortcut
             menu.addItem(item)
         }
-
-        let bluetoothToggle = NSMenuItem(
-            title: L.text(da: "Bluetooth-batteri", en: "Bluetooth battery"),
-            action: #selector(toggleBluetoothVisibility(_:)),
-            keyEquivalent: ""
-        )
-        bluetoothToggle.target = self
-        bluetoothToggle.state = isBluetoothBatteryVisible() ? .on : .off
-        menu.addItem(bluetoothToggle)
-
-        menu.addItem(.separator())
 
         let dockItem = NSMenuItem(
             title: L.text(da: "Dock kun på hovedskærm", en: "Dock on main display only"),
@@ -299,30 +173,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleShortcut(_ sender: NSMenuItem) {
         guard let shortcut = sender.representedObject as? Shortcut else { return }
         let turningOff = sender.state == .on
-        // Keep at least one icon visible so the settings menu stays reachable.
-        if turningOff && totalVisibleIconCount() <= 1 { return }
+        if turningOff {
+            // Keep at least one icon visible so the settings menu stays reachable.
+            let visibleCount = Shortcut.allCases.filter { isEnabled($0) }.count
+            if visibleCount <= 1 { return }
+        }
         let newValue = !turningOff
         UserDefaults.standard.set(newValue, forKey: shortcut.rawValue)
         statusItems[shortcut]?.isVisible = newValue
-    }
-
-    @objc private func toggleBluetoothVisibility(_ sender: NSMenuItem) {
-        let turningOff = sender.state == .on
-        if turningOff && totalVisibleIconCount() <= 1 { return }
-        let newValue = !turningOff
-        UserDefaults.standard.set(newValue, forKey: "showBluetoothBattery")
-        bluetoothStatusItem?.isVisible = newValue
-    }
-
-    private func isBluetoothBatteryVisible() -> Bool {
-        UserDefaults.standard.object(forKey: "showBluetoothBattery") == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: "showBluetoothBattery")
-    }
-
-    private func totalVisibleIconCount() -> Int {
-        let shortcutCount = Shortcut.allCases.filter { isEnabled($0) }.count
-        return shortcutCount + (isBluetoothBatteryVisible() ? 1 : 0)
     }
 
     @objc private func toggleDockMainDisplayOnly(_ sender: NSMenuItem) {
@@ -369,7 +227,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for shortcut in Shortcut.allCases {
             statusItems[shortcut]?.button?.toolTip = shortcut.menuTitle()
         }
-        updateBluetoothTooltip()
     }
 
     private func isEnabled(_ shortcut: Shortcut) -> Bool {
