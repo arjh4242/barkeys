@@ -10,7 +10,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-swiftc -O "$SCRIPT_DIR/main.swift" -o "$APP_DIR/Contents/MacOS/$APP_NAME"
+swiftc -O "$SCRIPT_DIR/main.swift" "$SCRIPT_DIR/BluetoothBattery.swift" -o "$APP_DIR/Contents/MacOS/$APP_NAME"
 cp "$SCRIPT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$SCRIPT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
