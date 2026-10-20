@@ -16,12 +16,12 @@ private func postCommandKey(_ keyCode: CGKeyCode, flags: CGEventFlags = .maskCom
     up.post(tap: .cghidEventTap)
 }
 
-private enum AppLanguage: String {
+enum AppLanguage: String {
     case danish = "da"
     case english = "en"
 }
 
-private enum L {
+enum L {
     static var lang: AppLanguage {
         if let raw = UserDefaults.standard.string(forKey: "language"), let l = AppLanguage(rawValue: raw) {
             return l
