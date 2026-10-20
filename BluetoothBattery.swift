@@ -4,17 +4,19 @@ import IOKit.hid
 import UserNotifications
 
 // Battery level for a Bluetooth device is not part of any public, documented
-// macOS API. Two community techniques are combined here:
-// 1. IOHIDManager: devices that implement the standard Bluetooth HID Battery
-//    Service (many "Made for Mac" mice/keyboards/trackpads, not just Apple's)
-//    expose a "BatteryPercent" property on their IOHIDDevice. This is the
-//    more broadly applicable source and is tried first.
-// 2. IOBluetoothDevice's private "batteryPercent" KVC key, which Apple's own
-//    accessories (AirPods, Magic Mouse/Keyboard/Trackpad) populate even when
-//    they don't surface it through IOHIDManager.
-// Devices using audio profiles (A2DP/HFP) such as headphones, earbuds and
-// speakers don't expose battery through either path, so `battery` stays nil
-// for those.
+// macOS API. Three sources are tried, in order of how closely they match
+// what System Settings itself shows:
+// 1. BatteryCenter.framework (private): the same backing store System
+//    Settings' Bluetooth pane and Control Center read from for ANY
+//    accessory (Apple or third-party) that reports battery, regardless of
+//    which underlying profile it uses.
+// 2. IOHIDManager: devices implementing the standard Bluetooth HID Battery
+//    Service expose a "BatteryPercent" property on their IOHIDDevice.
+// 3. IOBluetoothDevice's private "batteryPercent" KVC key, which mainly
+//    works for Apple's own accessories.
+// Devices on audio profiles (A2DP/HFP) such as headphones, earbuds and
+// speakers generally don't expose battery through any of these, so
+// `battery` stays nil for those.
 struct BluetoothDeviceInfo {
     let address: String
     let name: String
@@ -39,6 +41,7 @@ final class BluetoothBatteryMonitor {
     func refresh() {
         var result: [BluetoothDeviceInfo] = []
         let batterySelector = NSSelectorFromString("batteryPercent")
+        let batteryCenter = batteryCenterLevels()
         let hidBatteries = hidBluetoothBatteryLevels()
 
         if let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
@@ -46,7 +49,8 @@ final class BluetoothBatteryMonitor {
                 let address = device.addressString ?? UUID().uuidString
                 let name = device.name ?? L.text(da: "Ukendt enhed", en: "Unknown device")
 
-                var battery: Int? = hidBatteries[name]
+                var battery: Int? = matchBattery(name: name, in: batteryCenter)
+                    ?? matchBattery(name: name, in: hidBatteries)
                 if battery == nil,
                    device.responds(to: batterySelector),
                    let value = device.value(forKey: "batteryPercent") as? Int,
@@ -61,6 +65,52 @@ final class BluetoothBatteryMonitor {
 
         devices = result.sorted { $0.name < $1.name }
         onUpdate?()
+    }
+
+    private func matchBattery(name: String, in dict: [String: Int]) -> Int? {
+        if let exact = dict[name] { return exact }
+        let normalized = name.trimmingCharacters(in: .whitespaces).lowercased()
+        for (key, value) in dict {
+            if key.trimmingCharacters(in: .whitespaces).lowercased() == normalized {
+                return value
+            }
+        }
+        return nil
+    }
+
+    // Loads the private BatteryCenter framework used internally by System
+    // Settings and Control Center, and reads its device list via KVC. This
+    // can break on future macOS versions since it's not a public API; if
+    // loading or any step fails, this simply returns an empty dictionary
+    // and the other two sources are used instead.
+    private func batteryCenterLevels() -> [String: Int] {
+        var result: [String: Int] = [:]
+
+        guard let bundle = Bundle(path: "/System/Library/PrivateFrameworks/BatteryCenter.framework"),
+              bundle.load(),
+              let cls = NSClassFromString("BCBatteryDeviceController") else {
+            return result
+        }
+
+        let clsObject = cls as AnyObject
+        let sharedSelector = NSSelectorFromString("sharedInstance")
+        guard clsObject.responds(to: sharedSelector),
+              let controller = clsObject.perform(sharedSelector)?.takeUnretainedValue() as? NSObject else {
+            return result
+        }
+
+        guard let bcDevices = controller.value(forKey: "devices") as? [NSObject] else {
+            return result
+        }
+
+        for device in bcDevices {
+            guard let name = device.value(forKey: "name") as? String,
+                  let percent = device.value(forKey: "current") as? Int,
+                  percent >= 0, percent <= 100 else { continue }
+            result[name] = percent
+        }
+
+        return result
     }
 
     private func hidBluetoothBatteryLevels() -> [String: Int] {
